@@ -3,13 +3,14 @@
 ..
    Local Variables
 .. |klister| replace:: `klister <https://github.com/gelisam/klister/>`__
+.. |MegaParsec| replace:: `MegaParsec <https://hackage.haskell.org/package/megaparsec>`__
 
 `Klister and the Ever Growing Cache`
 ====================================
 
 This chapter is a case study on the first pass of performance engineering for
 the |klister| programming language. This case study should be exemplary of any
-system which is shortlived, has a distinct phase of input and output, and
+system which is shortlived, has distinct phases of input and output, and
 maintains state. To diagnose the performance issues this case study uses
 :ref:`Heap Profiling<Heap Profiling Chapter` with :ref:`Eventlog <EventLog
 Chapter>`, :ref:`Info Table Profiling <IPE Chapter>`, and ... TODO
@@ -17,13 +18,69 @@ Chapter>`, :ref:`Info Table Profiling <IPE Chapter>`, and ... TODO
 Introduction to the System
 --------------------------
 
-Klister is an interpreted programming language. The exact kind of language, and
-its features, are not relevant for our purposes. Instead, all we need to know
-about the system is that it inputs a program, parses the program, maintains
-mutable stores of variables and outputs a result.
+For this case study, the system we are analyzing is the interpreter for Klister.
+Klister is an interpreted scheme-like programming language. The exact kind of
+language, and its features, are not relevant for our purposes. Instead, all we
+need to know about this system is that it inputs a program, parses the program,
+maintains mutable stores of variables and outputs a result.
+
+In order to begin performance engineering we need to know the sub-systems that
+compose the interpreter. In klister, there are 4 major subsystems:
+
+#. Parser: The system that lexes and tokenizes. Klister uses |MegaParsec| for this
+#. Expander: Klister is a scheme-like language with hygenic macros. This
+   sub-systems performs the macro expansion and elaboration typical to these
+   kinds of programming languages.
+#. Evaluator: The evaluator inputs an abstract syntax tree which represents a
+   klister program and executes program in the Haskell runtime system and
+   outputs the result.
+
 
 Characterizing the Problem
 --------------------------
+
+The goal is to speed up the klister interpreter, but this task is too vague to
+begin our work. We first need to know specifics. That is, we need to have a
+reproducible test so that we can observe where time is spent, where memory is
+allocated and where memory is consumed. Then we can correlate these costs to
+subsystems in the interpreter; this will allow us to make statements that are
+actionable and precise. For example, we would like to say "The parser finishes a
+100 line program in 100ms and runs in 100Kb of constant space, but the expander
+allocates 2Gb and finishes its computation in 2 minutes!". Once we can make
+precise statements, we can begin forming hypotheses to speed up the system.
+
+We'll use klister's testsuite as our reproducible test. This will provide a good
+sample of programs to test and will allow us to find particularly degenerate
+programs. These programs will are key tools in our performance engineering tool
+belt. To correlate costs to subsystems we'll profile and lookup the offending
+functions in the source code.
+
+ .. note::
+
+   A quick note on these degenerate programs and a mental model that you might
+   find useful. In the abstract, we can think about the *system space* of the
+   system. The system space is the space of all possible semantically equivalent
+   systems, for some input and for some available resources. For example, for
+   klister, given the input program ``(+ 2 2)`` we have an infinite space of
+   possible klister interpreters, some with many machine resources and some with
+   few. Similarly, given the same machine to run the klister interpreter, and
+   the same input program, we still have an infinite space of klister
+   interpreters, some of which will be very fast (in wall time) and some will be
+   very slow, depending on their implementation.
+
+   Now we can imagine that there are boundaries in this system space that delineate
+   acceptable performance from unacceptable performance, however one defines
+   performance. These degenerate programs are inputs *that point to such a
+   boundary*, and thus they are useful allies in our performance work. As we
+   improve the interpreter these boundaries will change and we'll have to find even
+   more degenerate programs to observe the boundaries again.
+   First, we begin with a code review to better understand the interpreter and to read
+   through the code with a performance engineering mindset.
+
+Performance Code Review
+^^^^^^^^^^^^^^^^^^^^^^^
+
+
 
 We identify two problems. First, we find suspicious uses of ``Data.Map`` by a
 quick read through the interpreter code:
@@ -180,9 +237,9 @@ test that reports a time:
        integer-syntax:                                    OK (0.04s)
        import:                                            OK (0.04s)
 
-Notice that both ``implicit-conversion`` and ``implicit-conversion-test`` pass
-in 7 and 9 *seconds*, whereas each other test passes in well under a second
-(except ``higher-kinded-patterns``). Clearly something is amiss.
+Notice that both ``implicit-conversion`` and ``implicit-conversion-test`` are
+outliers, passing in 7 and 9 *seconds*, whereas each other test passes in well
+under a second (except ``higher-kinded-patterns``). Clearly something is amiss.
 
 
 Restate the Problem
@@ -205,7 +262,7 @@ So let's run a ticky report:
 
 and check the results sorted by allocations:
 
-.. code-block:: bash
+.. code-block::
 
    ~/programming/klister main*
    14:45:37 ❯ cat ticky | tail -n +20 | sort -k2 -nr | less
@@ -226,16 +283,92 @@ We see that insertions are not the top of the list but still allocate a fair
 amount of memory (around 195 MegaBits). This is not entirely unexpected as we
 know the programs we're running are smaller than one that will be run in the
 future. However, we do see that the 5th and 6th most allocating functions called
-when the testsuite is run are ``ScopeSet.isSubsetOf`` and
-``Binding.$fMonoidBindingTable_$unionWith``. Let's check these functions in the
-source code:
+are ``ScopeSet.isSubsetOf`` and ``Binding.$fMonoidBindingTable_$unionWith``.
+That suggests peculiar usage patterns because ``isSubsetOf`` should only be
+returning a ``Bool`` not allocating. ``unionWith`` should be allocating, but
+that this occurs in the ``Monoid Binding`` instance is interesting. Let's check
+these functions in the source code:
 
 .. code-block:: haskell
 
+   data ScopeSet = ScopeSet
+     { _universalScopes :: Set Scope
+     , _phaseScopes :: Map Phase (Set Scope)
+     }
 
 
+   data Scope = Scope { scopeNum :: Int, scopePurpose :: Text }
+     deriving (Data, Eq, Ord, Show)
+
+   newtype Phase = Phase { phaseNum :: Natural }
+     deriving (Data, Eq, Ord, Show)
+
+   isSubsetOf :: Phase -> ScopeSet -> ScopeSet -> Bool
+   isSubsetOf p scs1 scs2 =
+     Set.isSubsetOf (scopes p scs1) (scopes p scs2)
 
 
+   scopes :: Phase -> ScopeSet -> Set Scope
+   scopes p scs = view universalScopes scs `Set.union`
+                  view (phaseScopes . at p . non Set.empty) scs
+
+
+We see that a ``ScopeSet`` is a record of ``Data.Set Scope`` and ``Data.Map``
+indexed by ``Phase`` that holds ``Set Scope``. Furthermore, both ``Scope`` and
+``Phase`` are Integer-like. So we have an implementation that could use
+``IntMap`` and ``IntSet`` instead of ``Data.Map`` and ``Data.Set``.
+
+From the ticky, we know that ``isSubsetOf`` does a lot of allocation, but it
+shouldn't because it only returns a ``Bool``. Now we can see where this
+allocation is happening. ``isSubsetOf`` checks that ``scs1`` is a subset of
+``scs2`` by calling ``Set.isSubsetOf`` on the result of the ``scopes`` function.
+The ``scopes`` is allocating a new ``Set Scope`` from the ``ScopeSet`` via
+``Set.union``. So this code is performing a lookup on a ``Map``, then merging
+two ``Set``'s just to check the subset.
+
+There are several ways to improve the memory performance of this function.
+First, we can employ better data structures. We know that this code is doing a
+performing a lot of merges, so we should expect an improvement in both time and
+memory performance by using an ``IntMap`` and ``IntSet`` because these data
+structures provide more efficient merges than ``Data.Set`` and ``Data.Map``.
+Second, we can use a better algorithm. From the ticky ``isSubSetOf`` was called
+61143424 times. As written this code will perform a its lookups and unions each
+time, even if we have a duplicate call....TODO...So this is a good candidate for
+memoization or caching the calls to ``isSubsetOf`` because if duplicate calls
+occur then we can save a lot of work by remembering what the function has
+computed.
+
+The second function we were interested in is ``unionWith`` in the ``Monoid
+Binding`` instance. Here is the source code:
+
+.. code-block:: haskell
+
+   newtype BindingTable = BindingTable { _bindings :: Map Text [(ScopeSet, Binding, BindingInfo SrcLoc)] }
+     deriving (Data, Show)
+
+   instance Semigroup BindingTable where
+     b1 <> b2 = BindingTable $ Map.unionWith (<>) (view bindings b1) (view bindings b2)
+
+   instance Monoid BindingTable where
+     mempty = BindingTable Map.empty
+
+A ``BindingTable`` is a ``Map`` keyed on ``Text`` that holds a list of triples
+and the ``Semigroup`` instance is the origin of the ``unionWith`` in the ticky
+profile. This type is likely to be too lazy. ``Data.Map`` keyed on ``Text``
+relies on the ``Ord`` and ``Eq`` instances of ``Text`` to balance the map and
+perform lookups. In the worst case this means the runtime system has to compare
+the entire ``Text`` key. Another problem is the use of a list. A list is only an
+appropriate data structure if it is used like a stack or if it is used as a
+store that is eventually traversed and consumed. Once one finds themselves
+performing a lookup or a merge on a list, it is time to use a different data
+structure. The last problem is the 3-tuple.
+
+Next let's see how many calls to a ``delete`` like function there is. We're
+interested in how much deletion the code does because ``delete`` are a source of
+memory leaks. For example, consider the scenario where you have a ``Map Key
+HugeValue``, after a ``delete`` if the resulting ``Map`` is not forced then
+we'll leak memory for the deleted ``HugeValue`` until the map is finally
+evaluated.
 
 Don't Think Look
 ----------------
