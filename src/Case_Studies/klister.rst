@@ -383,12 +383,18 @@ closure:
 
 There are several interesting aspects to this ticky profile snippet. First, the
 most allocating code is ``ScopeSet.allScopeSets``, it is allocating a dictionary
-(``+``) of some type (``.``) and function (``>``). The second most allocating
-code is a SAT'd function ``sat_sOYl``, from its description: ``{v} (ScopeSet)
-(fun) in rNAX`` we can see that it is a non-exported name (``{v}``), in the
-``(ScopeSet)`` module, it is a function ``(fun)`` and is a local function in the
-``rNAX`` closure, which is the STG name of the closure for ``allScopeSets`` as
-shown in description for ``allScopeSets``.
+(``+``) of some type (``.``) and function (``>``). Anytime we observe a function
+call to a dictionary ``+`` in a ticky report we can conclude that the function
+did not specialize. So from this ticky we know that ``allScopeSets`` has not
+specialized and therefore hasn't benefited from possible optimizations if the
+function was inlined. The second most allocating code is a SAT'd function
+``sat_sOYl``, from its description: ``{v} (ScopeSet) (fun) in rNAX`` we can see
+that it is a non-exported name (``{v}``), in the ``(ScopeSet)`` module, it is a
+function ``(fun)`` and is a local function in the ``rNAX`` closure, which is the
+STG name of the closure for ``allScopeSets`` as shown in description for
+``allScopeSets``. So the two most allocating function calls in the interpreter,
+when running the testsuite, are due to ``allScopeSets``. Clearly,
+``allScopeSets`` is a good target for performance engineering.
 
 We also see that the 5th and 6th most allocating functions called are
 ``ScopeSet.isSubsetOf`` and ``Binding.$fMonoidBindingTable_$unionWith``. That
@@ -538,6 +544,7 @@ handling for keys:
 now let's check the ticky:
 
 .. code-block:: bash
+
    07:50:24 ❯ cat ticky | tail -n +20 | sort -k2 -nr | less
 
    53996388 4319711040          0   3 +.>                  ScopeSet.$wallScopeSets'{v rP2F} (fun)
@@ -577,130 +584,26 @@ changes propagate to the ``implicit-conversion`` test.
    Test suite klister-tests: RUNNING...
    All tests
      Expander tests
-       Core operations
-         Shifting core expressions:                       OK
-       Mini-tests
-         Expected to succeed
-           [lambda [x] x]:                                OK
-           [lambda [x] [lambda [x] x]]:                   OK
-           42:                                            OK
-           [lambda [f] [lambda [x] [f x]]]:               OK
-           Trivial user macro:                            OK
-           Let macro:                                     OK
-         Expected to fail
-           unbound variable and nothing else:             OK
-           unbound variable inside let-syntax:            OK
-           refer to a local variable from a future phase: OK
-           a macro calls itself:                          OK
+     ...
        Module tests
          Expected to succeed
-           examples/small.kl:                             OK
-           examples/two-defs.kl:                          OK
-           examples/id-compare.kl:                        OK
+         ...
            examples/lang.kl:                              OK (0.04s)
            examples/import.kl:                            OK (0.03s)
-           examples/phase1.kl:                            OK
-           examples/imports-shifted-macro.kl:             OK
            examples/macro-body-shift.kl:                  OK (0.04s)
            examples/test-quasiquote.kl:                   OK (0.04s)
            examples/quasiquote-syntax-test.kl:            OK (0.03s)
            examples/hygiene.kl:                           OK (0.66s)
            examples/defun-test.kl:                        OK (0.03s)
-           examples/fun-exports.kl:                       OK
            examples/fun-exports-test.kl:                  OK (0.04s)
-           examples/syntax-loc.kl:                        OK
-           examples/bound-identifier.kl:                  OK
-         Expected to fail
-           examples/non-examples/import-phase.kl:         OK
-           examples/non-examples/missing-import.kl:       OK
-           examples/non-examples/type-errors.kl:          OK
-     Hedgehog tests
-       runPartialCore . nonPartial = id:                  OK
-           ✓ <interactive> passed 10 tests.
-       unsplit . split = pure:                            OK
-           ✓ <interactive> passed 10 tests.
      Golden tests
        test-quasiquote:                                   OK (0.04s)
-       import-scoping:                                    OK
        io:                                                OK (0.03s)
-       import-scoping-m1:                                 OK
-       tiny-types:                                        OK
-       small:                                             OK
-       import-scoping-m2:                                 OK
        defun-test:                                        OK (0.03s)
        contract:                                          OK (0.08s)
        int-ops:                                           OK (0.05s)
        implicit-conversion:                               OK (10.42s)
-       unknown-type:                                      OK (0.12s)
-       let1:                                              OK (0.02s)
-       ambiguous-kind:                                    OK
-       mcond-test:                                        OK (0.05s)
-       error:                                             OK
-       prelude-test:                                      OK (0.03s)
-       two-defs:                                          OK
-       bool:                                              OK (0.04s)
-       string:                                            OK
-       monad:                                             OK (0.19s)
-       pair-datatype:                                     OK (0.08s)
-       list-datatype:                                     OK (0.05s)
-       temporaries:                                       OK (0.25s)
-       hello:                                             OK (0.22s)
-       datatype-macro:                                    OK (0.15s)
-       exports-macro:                                     OK
-       import-renaming:                                   OK (0.06s)
-       id-compare:                                        OK
-       custom-module:                                     OK (0.30s)
-       list-syntax:                                       OK (0.04s)
-       let:                                               OK (0.06s)
-       lispy-do:                                          OK (0.08s)
-       fun-exports-test:                                  OK (0.04s)
-       phase1:                                            OK
-       import-list-and-do:                                OK (0.15s)
-       deep-patterns:                                     OK
-       primitive-datatypes:                               OK
-       fun-exports:                                       OK
-       reader-test:                                       OK (0.49s)
-       lang:                                              OK (0.03s)
-       either-datatype:                                   OK (0.03s)
-       reader:                                            OK (0.24s)
-       datatypes:                                         OK
-       lets:                                              OK
-       macro-body-shift:                                  OK (0.03s)
-       bound-identifier:                                  OK
-       syntax-loc:                                        OK
-       missing-import:                                    OK
-       error:                                             OK
-       type-errors:                                       OK
-       circular-2:                                        OK
-       import-phase:                                      OK
-       circular-1:                                        OK
-       quasiquote-syntax-test:                            OK (0.03s)
-       primitives-documentation:                          OK (0.12s)
-       hygiene:                                           OK (0.43s)
-       one-def:                                           OK
-       temporaries-test:                                  OK (0.42s)
-       lambda-case-test:                                  OK (0.09s)
-       pmatch:                                            OK (0.93s)
-       fix:                                               OK
-       product-type:                                      OK
-       lambda-case:                                       OK (0.07s)
-       rpn:                                               OK (1.21s)
-       custom-literals:                                   OK (0.31s)
-       mcond:                                             OK (0.03s)
-       free-identifier-case-test:                         OK (0.13s)
-       group:                                             OK
-       higher-kinded:                                     OK (0.11s)
-       define-syntax-rule:                                OK (0.42s)
-       datatype-import:                                   OK (0.04s)
-       do:                                                OK (0.10s)
-       rpn-test:                                          OK (1.18s)
-       imports-shifted-macro:                             OK
-       anaphoric-if:                                      OK (0.83s)
-       syntax:                                            OK (0.12s)
-       defuns:                                            OK (0.82s)
-       import-import-renaming:                            OK (0.07s)
-       string-syntax:                                     OK (0.04s)
-       free-identifier-case:                              OK (0.15s)
+       ...
        implicit-conversion-test:                          OK (13.55s)
        higher-kinded-patterns:                            OK (0.77s)
        custom-literals-test:                              OK (0.38s)
@@ -712,3 +615,259 @@ changes propagate to the ``implicit-conversion`` test.
        meta-macro:                                        OK (0.10s)
        integer-syntax:                                    OK (0.04s)
        import:                                            OK (0.03s)
+
+Performance has degraded even though the ticky report showed an improvement! The
+``Data.Map`` performance costs must have been eclipsed by some other issue.
+However, this is quite surprising. The ``unionWith`` and ``isSubsetOf`` were
+very high in the sorted ticky report, so that we do not observe any difference
+in wall time *after* fixing the 5th and 6th most allocating function calls is
+contrary to what we should expect; even if the total allocations of these
+functions are one order of magnitude less than ``allScopeSets``. Let's generate
+a heap profile to see what's going on in the heap.
+
+Attempt 2: A Memory Leak Casts a Long Shadow
+--------------------------------------------
+
+We'll use eventlog and eventlog2html to observe the heap only on
+``implicit-conversion-test``. As a first pass we'll just inspect the types that
+are being allocated on the heap by passing ``-hy``:
+
+.. code-block:: bash
+
+   08:46:00 ❯ cabal test --test-show-details=streaming  --test-options='--pattern "implicit-conversion-test" +RTS -hy -l-agu -p -RTS' --ghc-options='-eventlog -rtsopts -O2'
+
+which produces:
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-hy.html"></iframe>
+
+We see that the heap is growing to over 2.8Gb of lists for just one test!
+Crucially the shape of this profile is not indicative of a memory leak. A
+typical memory leak should look like a pyramid because the program builds up
+thunks and then forces them all in relatively short time. What we observe in
+this profile is allocations of lists that *never decrease*. Now that we know
+what type to look for we can try to correlate this type to a sub-system in the
+interpreter. To do so we'll do another heap profile but break down the heap by
+module (by using ``-hm`` instead of ``-hy``):
+
+.. code-block:: bash
+
+   08:46:00 ❯ cabal test --test-show-details=streaming  --test-options='--pattern "implicit-conversion-test" +RTS -hm -l-agu -p -RTS' --ghc-options='-eventlog -rtsopts -O2'
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-hm.html"></iframe>
+
+We see that these lists are coming from ``Expander.Monad``. This is suspicious.
+We have data being consistently allocated in essentially the state type of a
+sub-system. That certainly sounds like a memory leak, but before we can conclude
+that it is a memory leak we need to know why this data is retained at all. This
+is a good scenario to use :userGuide:`Biological Profiling
+<profiling.html#biographical-profiling>` because we want to know: (1) the state
+of these objects on the heap and (2) why they are not being collected, that is,
+why is GHC's runtime system keeping them alive. For (1) we'll do a biological
+profile and for (2) a retainer profile.
+
+Here's the biological profile:
+
+.. code-block:: bash
+
+   08:46:00 ❯ cabal test --test-show-details=streaming  --test-options='--pattern "implicit-conversion-test" +RTS -hb -l-agu -p -RTS' --ghc-options='-eventlog -rtsopts -O2'
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-hb.html"></iframe>
+
+Void! The lists are in a ``void`` state meaning these objects are allocated
+``but are never used``. Now we can restate the problem: There is a memory leak
+in the ``Expander``, when ``implicit-conversion-test`` is run in the
+interpreter, that allocates a total of 121.8 Gb (eventlog shows 116171.68
+*MebiBytes* in the detailed tab).
+
+Now to answer why this data is being retained. Here is the retainer profile.
+
+.. code-block:: bash
+
+   09:34:36 ❮ cabal test --enable-profiling --test-show-details=streaming --test-options='--pattern "implicit-conversion-test" +RTS -hr -l-agu -p -RTS' --ghc-options='-eventlog -rtsopts -O2'
+
+   09:47:24 ❯ hp2ps -c klister-tests.hp && ps2pdf klister-tests.ps
+
+.. note::
+
+   Eventlog threw an exception for this retainer profile. So I've resorted to
+   use the classic tools: ``hp2ps`` and ``ps2pdf`` to render the profile.
+
+.. image:: /_static/klister/klister-eventlog-implicit-conversion-hr.png
+   :width: 800
+
+The retainer profile clearly shows that ``currentEnv`` is keeping this data
+alive and now has the distinguishing profile of a memory leak. Let's look at
+that function:
+
+.. code-block:: haskell
+
+   -- in Expander.Monad
+
+   currentEnv :: Expand VEnv
+   currentEnv = do
+     phase <- currentPhase
+     globalEnv <- fromMaybe mempty . view (expanderWorld . worldEnvironments . at phase) <$> getState
+     localEnv  <- fromMaybe mempty . view (expanderCurrentEnvs . at phase) <$> getState
+     return $ globalEnv <> localEnv
+
+This code is reading from the ``Expander`` state twice to retrieve ``globalEnv``
+and ``localEnv`` and the returning the union of these two environments. Because
+this code is monadic, there is a high probability that these projections from
+the state to retrieve ``globalEnv`` and ``localEnv`` are lazy. Furthermore, the
+``return`` statement is clearly lazy. In general, unless the result of a monadic
+action *needs* to be consumed lazily there is little reason to not make
+it strict in the return. Using a lazy return risks thunks accumulating from
+bind. In this case, if the result is not immediately demanded, then this code
+will allocate a thunk for ``phase``, ``globalEnv``, ``localEnv`` and the merge
+of both ``globalEnv`` and ``localEnv``.
+
+Before changing the code, let's first inspect the types. Here is the type for
+``Expand``:
+
+.. code-block:: haskell
+
+   newtype Expand a = Expand
+     { runExpand :: ReaderT ExpanderContext (ExceptT ExpansionErr IO) a
+     }
+     deriving (Functor, Applicative, Monad, MonadError ExpansionErr, MonadIO, MonadReader ExpanderContext)
+
+   data ExpanderContext = ExpanderContext
+     { _expanderLocal :: !ExpanderLocal
+     , _expanderState :: IORef ExpanderState
+     }
+
+Where ``ExpanderState`` was shown above. So we have a classic `ReaderT over IO
+<https://www.fpcomplete.com/blog/2017/06/readert-design-pattern/>`_ pattern.
+Meaning that the laziness of any state updates depend on the strictness of
+functions operating on ``ExpanderContext``. Next let's check the types of
+``globalEnv`` and ``localEnv``:
+
+.. code-block:: haskell
+
+   -- in Expander.Monad.hs
+   type VEnv = Env Var Value
+
+   -- in Env.hs
+   newtype Env v a = Env (IntMap (Ident, a))
+     deriving newtype (Eq, Monoid, Semigroup, Show)
+     deriving stock Functor
+
+   -- in World.hs
+
+   data World a = World
+     { _worldEnvironments :: !(Store Phase (Env Var a))
+     , _worldTypeContexts :: !(TypeContext Var SchemePtr)
+     , _worldTransformerEnvironments :: !(Store Phase (Env MacroVar a))
+     , _worldModules      :: !(HashMap ModuleName CompleteModule)
+     , _worldVisited      :: !(HashMap ModuleName (Set Phase))
+     , _worldExports      :: !(HashMap ModuleName Exports)
+     , _worldEvaluated    :: !(HashMap ModuleName [EvalResult])
+     , _worldDatatypes    :: !(Store Phase (HashMap Datatype DatatypeInfo))
+     , _worldConstructors :: !(Store Phase (HashMap Constructor (ConstructorInfo Ty)))
+     , _worldLocation     :: FilePath
+     }
+
+``currentEnv``, the leaky function, returns a ``Expand VEnv``, ``VEnv`` is a
+``Env Var Value`` where an ``Env`` is basically an ``IntMap``. Thus
+``globalEnv`` and ``localEnv`` are both ``IntMap`` that stores a tuple of
+``(Ident, Value)``. Here is the type of ``Value``:
+
+.. code-block:: haskell
+
+   -- in Value.hs
+   data Value
+     = ValueClosure Closure
+     | ValueSyntax Syntax
+     | ValueMacroAction MacroAction
+     | ValueIOAction (IO Value)
+     | ValueOutputPort Handle
+     | ValueInteger Integer
+     | ValueCtor Constructor [Value]
+     | ValueType Ty
+     | ValueString Text
+
+Notice that ``ValueCtor`` holds a lazy list of ``Value``. Should
+``implicit-tests`` create many ``ValueCtor`` then the expander state will blow
+up. Let's test this and make ``Value`` strict and then generate another
+biographical profile to observe the change:
+
+.. code-block:: haskell
+
+   -- in Value.hs
+   data Value
+     = ValueClosure !Closure
+     | ValueSyntax  !Syntax
+     | ValueMacroAction !MacroAction
+     | ValueIOAction   !(IO Value)
+     | ValueOutputPort !Handle
+     | ValueInteger    !Integer
+     | ValueCtor    !Constructor ![Value]
+     | ValueType    !Ty
+     | ValueString  !Text
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no"
+         src="../../../_static/klister/klister-eventlog-implicit-conversion-strict-value.html"></iframe>
+
+Unfortunately, the change made no difference. We'll revert the change and try
+making the monadic action strict in its return:
+
+.. code-block:: haskell
+
+   -- in Expander.Monad
+
+   currentEnv :: Expand VEnv
+   currentEnv = do
+     phase <- currentPhase
+     globalEnv <- fromMaybe mempty . view (expanderWorld . worldEnvironments . at phase) <$> getState
+     localEnv  <- fromMaybe mempty . view (expanderCurrentEnvs . at phase) <$> getState
+     return $! globalEnv <> localEnv  -- new
+
+which results in this profile:
+
+
+.. code-block:: bash
+
+   08:46:00 ❯ cabal test --test-show-details=streaming  --test-options='--pattern "implicit-conversion-test" +RTS -hb -l-agu -p -RTS' --ghc-options='-eventlog -rtsopts -O2'
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-currentEnv-fixed.html"></iframe>
+
+A significant improvement! Instead of 121.8 Gb the profile shows total
+allocation in ``void`` of 4.62 Gb (4404.22 MiB) which is a 30x reduction.
+
+
+Attempt 3: Still too much void
+------------------------------
+
+However, there is still a lot of ``void`` in the heap profile. This is a good
+scenario for info-table profiling. Info-table profiling relates source code to
+closures which is exactly what we want to do.
+
+.. code-block:: bash
+
+   11:16:31 ❮ cabal test --test-show-details=streaming --test-options='--pattern "implicit-conversion-test" +RTS -hi -i0.05 -l -RTS' --ghc-options='-eventlog -rtsopts -O2 -finfo-table-map -fdistinct-construct
+   or-tables'
+
+and the profile is rendered in eventlog:
+
+.. raw:: html
+
+         <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-ipe-allscopeset.html"></iframe>
+
+Notice that the legend displays the :term:`Info Table Address` instead of the
+closure type, module, or biography. Using the ``detailed`` tab we can find the
+exact line of source code for ``0x7c41d0`` and ``0xc0c330``; the addresses
+responsible for most of the allocations. We see that ``0x7c41d0`` has the
+description ``sat_sN17_info``, the closure type ``THUNK``, the type ``f a``, is
+in the module ``ScopeSet`` at line 146. That line is exactly our friend
+``allScopeSets`` which we observed performing the most allocation in the ticky
+profile above. Here is the source code:
