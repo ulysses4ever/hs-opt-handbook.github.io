@@ -5,12 +5,12 @@
 .. |klister| replace:: `klister <https://github.com/gelisam/klister/>`__
 .. |MegaParsec| replace:: `MegaParsec <https://hackage.haskell.org/package/megaparsec>`__
 
-`Klister and the Ever Growing Cache`
-====================================
+`Klister First Pass Performance Engineering`
+============================================
 
-This chapter is a case study on the first pass of performance engineering for
-the |klister| programming language. This case study should be exemplary of any
-system which is shortlived, has distinct phases of input and output, and
+This chapter is a case study on a first pass of performance engineering for the
+|klister| programming language interpreter. This case study should be exemplary
+of any system which is shortlived, has distinct phases of input and output, and
 maintains state. To diagnose the performance issues this case study uses
 :ref:`Heap Profiling <Heap Profiling Chapter>` with :ref:`Eventlog <EventLog
 Chapter>`, :ref:`Info Table Profiling <IPE Chapter>`, and ... TODO
@@ -845,12 +845,13 @@ A significant improvement! Instead of 121.8 Gb the profile shows total
 allocation in ``void`` of 4.62 Gb (4404.22 MiB) which is a 30x reduction.
 
 
-Attempt 3: Still too much void
+Attempt 3: Still Too Much Void
 ------------------------------
 
 However, there is still a lot of ``void`` in the heap profile. This is a good
 scenario for info-table profiling. Info-table profiling relates source code to
-closures which is exactly what we want to do.
+closures so with it we can see where in the source code the ``void`` is
+originating.
 
 .. code-block:: bash
 
@@ -864,10 +865,109 @@ and the profile is rendered in eventlog:
          <iframe id="scaled-frame" scrolling="no" src="../../../_static/klister/klister-eventlog-implicit-conversion-ipe-allscopeset.html"></iframe>
 
 Notice that the legend displays the :term:`Info Table Address` instead of the
-closure type, module, or biography. Using the ``detailed`` tab we can find the
-exact line of source code for ``0x7c41d0`` and ``0xc0c330``; the addresses
-responsible for most of the allocations. We see that ``0x7c41d0`` has the
-description ``sat_sN17_info``, the closure type ``THUNK``, the type ``f a``, is
-in the module ``ScopeSet`` at line 146. That line is exactly our friend
-``allScopeSets`` which we observed performing the most allocation in the ticky
-profile above. Here is the source code:
+closure type, module, or biography. From the profile we find that ``0x7c41d0``
+and ``0xc0c330`` are responsible for the ``void`` allocation. The detailed tab
+maps these addresses directly to source code. In the detailed tab, we see that
+``0x7c41d0`` has the description ``sat_sN17_info``, the closure type ``THUNK``,
+the type ``f a``, and is in the module ``ScopeSet`` at line 146. Thus we now
+know that the ``void`` is originating from thunks that are never resolved. That
+line is exactly the local ``combine`` function in ``allScopeSets``. Recall that
+we also observed ``allScopeSets`` doing the most allocation in the ticky profile
+above. Here is the source code:
+
+.. code-block:: haskell
+
+   allScopeSets :: Data d => Traversal' d ScopeSet
+   allScopeSets = allScopeSets'
+     where
+       allScopeSets' :: forall f d. (Applicative f, Data d)
+                     => (ScopeSet -> f ScopeSet)
+                     -> d -> f d
+       allScopeSets' f = gmapA go
+         where
+           go :: forall a. Data a => a -> f a
+           go a = case eqT @a @ScopeSet of
+             Just Refl -> f a
+             Nothing -> allScopeSets' f a
+
+       -- A variant of Data.Data.gmapM which uses Applicative instead of Monad
+       gmapA :: forall f d. (Applicative f, Data d)
+             => (forall x. Data x => x -> f x)
+             -> d -> f d
+       gmapA g = gfoldl combine pure
+         where
+           combine :: Data a => f (a -> b) -> a -> f b
+           combine ff a = (<*>) ff (g a)
+
+This code is exceedingly polymorphic and is effectively asking GHC to generate
+traversals over many different data types. We can observe exactly which data
+types by checking Core. Note that I am only showing a very small snippet of the
+Core that is generated for just ``gmapA`` because that is the driver of
+``combine``:
+
+.. code-block:: haskell
+
+   ScopeSet.$w$cgmapMp [InlPrag=[2]]
+     :: forall {m :: * -> *}.
+        (forall a b. m a -> (a -> m b) -> m b)
+        -> (forall a. a -> m a)
+        -> (forall a. m a)
+        -> (forall a. m a -> m a -> m a)
+        -> (forall d. Data d => d -> m d)
+        -> ScopeSet
+        -> m ScopeSet
+   [GblId,
+    Arity=6,
+    Str=<SCS(C1(L))><L><L><LCL(C1(L))><LCL(C1(L))><MP(L,L)>,
+    Unf=Unf{Src=<vanilla>, TopLvl=True, Value=True, ConLike=True,
+            WorkFree=True, Expandable=True,
+            Guidance=IF_ARGS [300 360 0 120 120 20] 640 0}]
+   ScopeSet.$w$cgmapMp
+     = \ (@(m_s1ixv :: * -> *))
+         (ww_s1ixG
+            :: forall a b. m_s1ixv a -> (a -> m_s1ixv b) -> m_s1ixv b)
+         (ww1_s1ixI :: forall a. a -> m_s1ixv a)
+         (ww2_s1ixK :: forall a. m_s1ixv a)
+         (ww3_s1ixL :: forall a. m_s1ixv a -> m_s1ixv a -> m_s1ixv a)
+         (w_s1ixx :: forall d. Data d => d -> m_s1ixv d)
+         (w1_s1ixy :: ScopeSet) ->
+         ww_s1ixG
+           @(ScopeSet, Bool)
+           @ScopeSet
+           (src<src/ScopeSet.hs:52:13-16>
+        ...
+         ww_s1ixG
+           @(Store Phase (Set Scope) -> ScopeSet, Bool)
+           @(ScopeSet, Bool)
+           (let {
+              lvl15_s1iqy :: m_s1ixv (Set Scope)
+              [LclId]
+              lvl15_s1iqy
+                = w_s1ixx @(Set Scope) ScopeSet.$fDataScopeSet3 a1_a1hFH } in
+            ww_s1ixG
+              @(Set Scope -> Store Phase (Set Scope) -> ScopeSet, Bool)
+              @(Store Phase (Set Scope) -> ScopeSet, Bool)
+              (ww1_s1ixI
+                 @(Set Scope -> Store Phase (Set Scope) -> ScopeSet, Bool)
+                 ScopeSet.$fDataScopeSet1)
+
+First notice that the Core name is ``ScopeSet.$w$cgmapMp`` not
+``ScopeSet$w$cgmapA``. This code snippet is from *only one* of the ``gmapA``
+functions that are generated, and is ~100 lines of Core; in total there are six
+versions that are generated:
+
+.. code-block:: haskell
+
+
+   ScopeSet.$fDataScopeSet [InlPrag=CONLIKE] :: Data ScopeSet
+   ...
+   ScopeSet.$fDataScopeSet_$cgmapQr
+   ScopeSet.$fDataScopeSet_$cgmapQ
+   ScopeSet.$fDataScopeSet_$cgmapQi
+   ScopeSet.$fDataScopeSet_$cgmapM
+   ScopeSet.$fDataScopeSet_$cgmapMp
+   ScopeSet.$fDataScopeSet_$cgmapMo
+
+More importantly the types that this ``gmapA`` are traversing are displayed via
+coercions prefixed by ``@``. For example, ``@(Set Scope -> Store Phase (Set
+Scope) -> ScopeSet, Bool)`` and ``@(Store Phase (Set Scope) -> ScopeSet, Bool)``.
